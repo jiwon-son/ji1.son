@@ -1,0 +1,136 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.widgets import SpanSelector
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinterdnd2 import TkinterDnD, DND_FILES
+import tifffile as tiff
+import os
+
+class singlepage_viewer:
+    def __init__(self, file_path=None):
+        self.root = TkinterDnD.Tk()
+        self.root.title("HEA2 Span Analyzer - ROI Crop Mode")
+        self.root.geometry("400x350")
+        
+        self.file_path = file_path
+        self.raw_data = None
+        self.mode_var = tk.StringVar(value="horizontal")
+        self.current_range = None # [min, max] 저장용
+        
+        self._create_ui()
+        
+        if self.file_path:
+            self.load_file(self.file_path)
+        
+    def _create_ui(self):
+        file_frame = tk.LabelFrame(self.root, text="File", padx=10, pady=10)
+        file_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(file_frame, text="Open TIFF", command=self.load_file).pack(side="left", padx=5)
+        self.lbl_status = tk.Label(file_frame, text="Drop TIFF file here", fg="blue")
+        self.lbl_status.pack(side="left", padx=5)
+        
+        calc_frame = tk.LabelFrame(self.root, text="Analysis Mode", padx=10, pady=10)
+        calc_frame.pack(fill="x", padx=10, pady=5)
+        
+        # 방향 정의 수정
+        tk.Radiobutton(calc_frame, text="Horizontal (Adjust Y-width, Plot X)", 
+                       variable=self.mode_var, value="horizontal").pack(anchor="w")
+        tk.Radiobutton(calc_frame, text="Vertical (Adjust X-width, Plot Y)", 
+                       variable=self.mode_var, value="vertical").pack(anchor="w")
+        
+        btn_plot = tk.Button(self.root, text="Open Selector (Press Enter after select)", 
+                             command=self.show_selector, height=2, bg="lightgreen")
+        btn_plot.pack(fill="x", padx=15, pady=20)
+
+        self.root.drop_target_register(DND_FILES)
+        self.root.dnd_bind('<<Drop>>', lambda e: self.load_file(e.data.strip('{}')))
+
+    def load_file(self, path=None):
+        if not path:
+            path = filedialog.askopenfilename(filetypes=[("TIFF Files", "*.tif *.tiff")])
+        if path:
+            try:
+                self.file_path = path
+                with tiff.TiffFile(path) as tif:
+                    self.raw_data = tif.pages[0].asarray()
+                self.lbl_status.config(text=os.path.basename(path), fg="green")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load TIFF: {e}")
+
+    def show_selector(self):
+        if self.raw_data is None: return
+
+        self.sel_fig, self.sel_ax = plt.subplots(figsize=(10, 7))
+        self.sel_ax.imshow(self.raw_data, cmap="gray")
+        
+        mode = self.mode_var.get()
+        # 사용자의 요청대로 Span 방향 설정
+        # Horizontal 모드 -> Y축 범위를 잡아야 하므로 span 방향은 'vertical'
+        span_dir = 'vertical' if mode == 'horizontal' else 'horizontal'
+        
+        self.sel_ax.set_title(f"Adjust {mode.upper()} Range. Press 'Enter' to confirm.")
+
+        self.span = SpanSelector(
+            self.sel_ax, self.on_select, span_dir,
+            useblit=True, props=dict(alpha=0.3, facecolor='yellow'),
+            interactive=True, drag_from_anywhere=True
+        )
+        
+        # 엔터키 이벤트를 캔버스에 연결
+        self.sel_fig.canvas.mpl_connect('key_press_event', self.on_key)
+        plt.tight_layout()
+        plt.show()
+
+    def on_select(self, min_val, max_val):
+        # 마우스로 선택한 범위를 변수에만 저장해둠 (바로 그리지 않음)
+        self.current_range = sorted([int(min_val), int(max_val)])
+
+    def on_key(self, event):
+        # 엔터를 누르면 현재 범위로 결과 창 생성
+        if event.key == 'enter' and self.current_range:
+            v_min, v_max = self.current_range
+            plt.close(self.sel_fig) # 선택 창 닫기
+            self.generate_comparison_plot(v_min, v_max)
+
+    def generate_comparison_plot(self, v_min, v_max):
+        mode = self.mode_var.get()
+        
+        if mode == "horizontal":
+            # 수평 모드: Y범위(v_min~v_max)를 크롭, X축 따라 강도 계산
+            roi_crop = self.raw_data[v_min:v_max, :]
+            intensity = np.median(roi_crop, axis=0) # 세로로 뭉침
+            xlabel = "X-axis Pixel"
+        else:
+            # 수직 모드: X범위(v_min~v_max)를 크롭, Y축 따라 강도 계산
+            roi_crop = self.raw_data[:, v_min:v_max]
+            intensity = np.median(roi_crop, axis=1) # 가로로 뭉침
+            xlabel = "Y-axis Pixel"
+
+        # 결과 시각화: ROI 크롭과 그래프를 1:1 대응
+        fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=False)
+        ax_roi, ax_plot = axes
+
+        # 1. ROI 크롭 이미지 (영역만 딱 보여줌)
+        # 이미지가 너무 가늘게 보이지 않도록 aspect='auto' 설정
+        ax_roi.imshow(roi_crop, cmap="gray", aspect='auto')
+        ax_roi.set_title(f"Cropped ROI ({mode.capitalize()} Range: {v_min}-{v_max})")
+
+        # 2. 강도 그래프
+        ax_plot.plot(intensity, color='red', lw=1.5)
+        ax_plot.set_xlim(0, len(intensity)) # 이미지 가로/세로 길이와 그래프 축 일치
+        ax_plot.set_title(f"Median Intensity Profile")
+        ax_plot.set_xlabel(xlabel)
+        ax_plot.set_ylabel("Intensity")
+        ax_plot.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.show()
+
+    def run(self):
+        self.root.mainloop()
+
+if __name__ == "__main__":
+    app = singlepage_viewer()
+    app.run()
