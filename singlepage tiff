@@ -10,13 +10,13 @@ import os
 class singlepage_viewer:
     def __init__(self, file_path=None):
         self.root = TkinterDnD.Tk()
-        self.root.title("HEA2 Span Analyzer - ROI Crop Mode")
+        self.root.title("HEA2 Span Analyzer - Fixed Layout")
         self.root.geometry("400x350")
         
         self.file_path = file_path
         self.raw_data = None
         self.mode_var = tk.StringVar(value="horizontal")
-        self.current_range = None # [min, max] 저장용
+        self.current_range = None
         
         self._create_ui()
         
@@ -34,15 +34,13 @@ class singlepage_viewer:
         calc_frame = tk.LabelFrame(self.root, text="Analysis Mode", padx=10, pady=10)
         calc_frame.pack(fill="x", padx=10, pady=5)
         
-        # 방향 정의 수정
-        tk.Radiobutton(calc_frame, text="Horizontal (Adjust Y-width, Plot X)", 
+        tk.Radiobutton(calc_frame, text="Horizontal (Select Y, Plot X-axis)", 
                        variable=self.mode_var, value="horizontal").pack(anchor="w")
-        tk.Radiobutton(calc_frame, text="Vertical (Adjust X-width, Plot Y)", 
+        tk.Radiobutton(calc_frame, text="Vertical (Select X, Plot Y-axis)", 
                        variable=self.mode_var, value="vertical").pack(anchor="w")
         
-        btn_plot = tk.Button(self.root, text="Open Selector (Press Enter after select)", 
-                             command=self.show_selector, height=2, bg="lightgreen")
-        btn_plot.pack(fill="x", padx=15, pady=20)
+        tk.Button(self.root, text="Open Selector (Keep Open, Press Enter)", 
+                  command=self.show_selector, height=2, bg="lightgreen").pack(fill="x", padx=15, pady=20)
 
         self.root.drop_target_register(DND_FILES)
         self.root.dnd_bind('<<Drop>>', lambda e: self.load_file(e.data.strip('{}')))
@@ -61,70 +59,64 @@ class singlepage_viewer:
 
     def show_selector(self):
         if self.raw_data is None: return
-
-        self.sel_fig, self.sel_ax = plt.subplots(figsize=(10, 7))
+        self.sel_fig, self.sel_ax = plt.subplots(figsize=(9, 7))
         self.sel_ax.imshow(self.raw_data, cmap="gray")
         
         mode = self.mode_var.get()
-        # 사용자의 요청대로 Span 방향 설정
-        # Horizontal 모드 -> Y축 범위를 잡아야 하므로 span 방향은 'vertical'
         span_dir = 'vertical' if mode == 'horizontal' else 'horizontal'
-        
-        self.sel_ax.set_title(f"Adjust {mode.upper()} Range. Press 'Enter' to confirm.")
+        self.sel_ax.set_title(f"[{mode.upper()}] Select Range & Press 'Enter' (Window stays open)")
 
         self.span = SpanSelector(
             self.sel_ax, self.on_select, span_dir,
             useblit=True, props=dict(alpha=0.3, facecolor='yellow'),
             interactive=True, drag_from_anywhere=True
         )
-        
-        # 엔터키 이벤트를 캔버스에 연결
         self.sel_fig.canvas.mpl_connect('key_press_event', self.on_key)
         plt.tight_layout()
         plt.show()
 
     def on_select(self, min_val, max_val):
-        # 마우스로 선택한 범위를 변수에만 저장해둠 (바로 그리지 않음)
         self.current_range = sorted([int(min_val), int(max_val)])
 
     def on_key(self, event):
-        # 엔터를 누르면 현재 범위로 결과 창 생성
         if event.key == 'enter' and self.current_range:
-            v_min, v_max = self.current_range
-            plt.close(self.sel_fig) # 선택 창 닫기
-            self.generate_comparison_plot(v_min, v_max)
+            # plt.close를 지워서 메인 선택창을 유지합니다.
+            self.generate_comparison_plot(self.current_range[0], self.current_range[1])
 
     def generate_comparison_plot(self, v_min, v_max):
         mode = self.mode_var.get()
         
         if mode == "horizontal":
-            # 수평 모드: Y범위(v_min~v_max)를 크롭, X축 따라 강도 계산
+            # 가로 분석: 위아래(Y) 범위를 크롭, 가로(X) 강도 계산
             roi_crop = self.raw_data[v_min:v_max, :]
-            intensity = np.median(roi_crop, axis=0) # 세로로 뭉침
-            xlabel = "X-axis Pixel"
+            intensity = np.median(roi_crop, axis=0)
+            
+            # 레이아웃: 위(이미지), 아래(그래프)
+            fig, (ax_roi, ax_plot) = plt.subplots(2, 1, figsize=(10, 6))
+            ax_roi.imshow(roi_crop, cmap="gray", aspect='auto')
+            ax_plot.plot(intensity, color='blue')
+            ax_plot.set_xlim(0, len(intensity))
+            ax_plot.set_xlabel("X-pixel")
+            
         else:
-            # 수직 모드: X범위(v_min~v_max)를 크롭, Y축 따라 강도 계산
+            # 세로 분석: 좌우(X) 범위를 크롭, 세로(Y) 강도 계산
             roi_crop = self.raw_data[:, v_min:v_max]
-            intensity = np.median(roi_crop, axis=1) # 가로로 뭉침
-            xlabel = "Y-axis Pixel"
+            intensity = np.median(roi_crop, axis=1)
+            
+            # 레이아웃: 왼쪽(이미지), 오른쪽(그래프)
+            fig, (ax_roi, ax_plot) = plt.subplots(1, 2, figsize=(8, 10), gridspec_kw={'width_ratios': [1, 3]})
+            ax_roi.imshow(roi_crop, cmap="gray", aspect='auto')
+            
+            # 중요: 그래프를 세로로 그리기 (plot(y, x) 형태)
+            ax_plot.plot(intensity, np.arange(len(intensity)), color='red')
+            ax_plot.invert_yaxis() # 이미지 좌표계와 맞추기 위해 Y축 반전
+            ax_plot.set_ylim(len(intensity), 0)
+            ax_plot.set_ylabel("Y-pixel")
+            ax_plot.set_xlabel("Intensity")
 
-        # 결과 시각화: ROI 크롭과 그래프를 1:1 대응
-        fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=False)
-        ax_roi, ax_plot = axes
-
-        # 1. ROI 크롭 이미지 (영역만 딱 보여줌)
-        # 이미지가 너무 가늘게 보이지 않도록 aspect='auto' 설정
-        ax_roi.imshow(roi_crop, cmap="gray", aspect='auto')
-        ax_roi.set_title(f"Cropped ROI ({mode.capitalize()} Range: {v_min}-{v_max})")
-
-        # 2. 강도 그래프
-        ax_plot.plot(intensity, color='red', lw=1.5)
-        ax_plot.set_xlim(0, len(intensity)) # 이미지 가로/세로 길이와 그래프 축 일치
-        ax_plot.set_title(f"Median Intensity Profile")
-        ax_plot.set_xlabel(xlabel)
-        ax_plot.set_ylabel("Intensity")
+        ax_roi.set_title(f"Crop ({v_min}-{v_max})")
+        ax_plot.set_title("Median Intensity")
         ax_plot.grid(True, alpha=0.3)
-
         plt.tight_layout()
         plt.show()
 
